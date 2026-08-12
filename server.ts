@@ -37,13 +37,13 @@ function saveJsonData(filepath: string, data: any) {
 
 // 1. GET /api/cases
 app.get('/api/cases', (req: Request, res: Response) => {
-  const cases = loadJsonData('data/cases.json', []);
+  const cases = loadJsonData('python/data/cases.json', []);
   res.json({ success: true, count: cases.length, cases });
 });
 
 // 2. GET /api/cases/:id
 app.get('/api/cases/:id', (req: Request, res: Response) => {
-  const cases = loadJsonData('data/cases.json', []);
+  const cases = loadJsonData('python/data/cases.json', []);
   const caseItem = cases.find((c: any) => c.case_id === req.params.id);
   if (!caseItem) {
     return res.status(404).json({ success: false, error: 'Case not found' });
@@ -234,7 +234,7 @@ Show Outputs: ${typeof caseItem.show_outputs === 'string' ? caseItem.show_output
 
 // 5. GET /api/reviews
 app.get('/api/reviews', (req: Request, res: Response) => {
-  const reviews = loadJsonData('data/review_log.json', []);
+  const reviews = loadJsonData('python/data/review_log.json', []);
   res.json({ success: true, reviews });
 });
 
@@ -245,7 +245,7 @@ app.post('/api/review', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'Missing required review parameters' });
   }
 
-  const reviews = loadJsonData('data/review_log.json', []);
+  const reviews = loadJsonData('python/data/review_log.json', []);
   const newReview = {
     review_id: `REV-${String(reviews.length + 1).padStart(3, '0')}`,
     case_id,
@@ -265,7 +265,7 @@ app.post('/api/review', (req: Request, res: Response) => {
 
 // 7. GET /api/verifications
 app.get('/api/verifications', (req: Request, res: Response) => {
-  const verifications = loadJsonData('data/verification_log.json', []);
+  const verifications = loadJsonData('python/data/verification_log.json', []);
   res.json({ success: true, verifications });
 });
 
@@ -276,7 +276,7 @@ app.post('/api/verify', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'Missing verification parameters' });
   }
 
-  const verifications = loadJsonData('data/verification_log.json', []);
+  const verifications = loadJsonData('python/data/verification_log.json', []);
   const newVerification = {
     verification_id: `VER-${String(verifications.length + 1).padStart(3, '0')}`,
     case_id,
@@ -295,8 +295,8 @@ app.post('/api/verify', (req: Request, res: Response) => {
 
 // 9. GET /api/evaluation
 app.get('/api/evaluation', (req: Request, res: Response) => {
-  const cases = loadJsonData('data/cases.json', []);
-  const reviews = loadJsonData('data/review_log.json', []);
+  const cases = loadJsonData('python/data/cases.json', []);
+  const reviews = loadJsonData('python/data/review_log.json', []);
 
   const totalCases = cases.length;
   const categories: Record<string, number> = {};
