@@ -1,0 +1,582 @@
+import csv
+import json
+import os
+
+cases = [
+    # --- VLAN CATEGORY (4 Cases) ---
+    {
+        "case_id": "CASE-001",
+        "title": "VLAN 10 Access Port Misconfiguration on Switch 1",
+        "category": "VLAN",
+        "symptom": "Host PC1 (192.168.10.15/24) cannot ping Host PC2 (192.168.10.20/24) on the same floor.",
+        "topology_note": "PC1 connected to SW1 Fa0/1. PC2 connected to SW1 Fa0/2. Both hosts are expected to be in VLAN 10 (Sales).",
+        "show_outputs": json.dumps({
+            "show vlan brief": "VLAN Name Status Ports\n---- -------------------------------- --------- -------------------------------\n1 default active Fa0/2, Fa0/3, Fa0/4\n10 Sales active Fa0/1\n20 Marketing active",
+            "show interfaces FastEthernet0/2 switchport": "Name: Fa0/2\nSwitchport: Enabled\nAdministrative Mode: static access\nOperational Mode: static access\nAccess Mode VLAN: 1 (default)",
+            "show ip interface brief": "Interface IP-Address OK? Method Status Protocol\nFastEthernet0/1 unassigned YES unset up up\nFastEthernet0/2 unassigned YES unset up up"
+        }),
+        "expected_fault": "Switch port Fa0/2 is configured in VLAN 1 (default) instead of VLAN 10.",
+        "osi_layer": "Layer 2",
+        "concept": "VLAN Membership",
+        "severity": "HIGH",
+        "expected_next_command": "show running-config interface Fa0/2",
+        "expected_fix": "interface Fa0/2\n switchport access vlan 10",
+        "verification_method": "ping 192.168.10.20 from PC1"
+    },
+    {
+        "case_id": "CASE-002",
+        "title": "Trunk Allowed VLAN List Missing VLAN 20",
+        "category": "VLAN",
+        "symptom": "Engineering department hosts in VLAN 20 cannot communicate between SW1 and SW2 across the building trunk link.",
+        "topology_note": "SW1 Gi0/1 connected to SW2 Gi0/1 via Trunk link carrying VLAN 10, 20, 30.",
+        "show_outputs": json.dumps({
+            "show interfaces trunk": "Port Mode Encapsulation Status Native vlan\nGi0/1 on 802.1q trunking 1\n\nPort Vlans allowed on trunk\nGi0/1 10,30\n\nPort Vlans allowed and active in management domain\nGi0/1 10,30",
+            "show vlan brief": "10 Sales active\n20 Engineering active\n30 Management active"
+        }),
+        "expected_fault": "Trunk interface Gi0/1 on SW1 has switchport trunk allowed vlan 10,30, omitting VLAN 20.",
+        "osi_layer": "Layer 2",
+        "concept": "802.1Q Trunking",
+        "severity": "HIGH",
+        "expected_next_command": "show interfaces Gi0/1 switchport",
+        "expected_fix": "interface Gi0/1\n switchport trunk allowed vlan add 20",
+        "verification_method": "ping 192.168.20.1 from SW2 SVI 20"
+    },
+    {
+        "case_id": "CASE-003",
+        "title": "Uncreated VLAN 30 in Switch Database",
+        "category": "VLAN",
+        "symptom": "Voice IP phones connected to SW3 Fa0/12 fail to register and get no connectivity.",
+        "topology_note": "Fa0/12 configured for switchport access vlan 30, but VLAN 30 is missing from vlan.dat.",
+        "show_outputs": json.dumps({
+            "show vlan brief": "1 default active Fa0/1..Fa0/11\n10 Sales active Fa0/13..Fa0/24\n(VLAN 30 is NOT listed)",
+            "show running-config interface Fa0/12": "interface FastEthernet0/12\n switchport mode access\n switchport access vlan 30"
+        }),
+        "expected_fault": "VLAN 30 does not exist in the switch VLAN database, causing Fa0/12 to be inactive.",
+        "osi_layer": "Layer 2",
+        "concept": "VLAN Creation",
+        "severity": "MEDIUM",
+        "expected_next_command": "show vlan id 30",
+        "expected_fix": "vlan 30\n name Voice",
+        "verification_method": "show vlan brief | include 30"
+    },
+    {
+        "case_id": "CASE-004",
+        "title": "Native VLAN Mismatch on Trunk Link",
+        "category": "VLAN",
+        "symptom": "CDP reports Native VLAN mismatch errors between SW1 and SW2. Traffic on VLAN 1 leaks unexpectedly.",
+        "topology_note": "SW1 Gi0/2 (Native VLAN 1) connected to SW2 Gi0/2 (Native VLAN 99).",
+        "show_outputs": json.dumps({
+            "show interfaces Gi0/2 switchport": "SW1 Gi0/2:\nAdministrative Mode: trunk\nOperational Mode: trunk\nTrunking Native Mode VLAN: 1 (default)",
+            "show logging": "%CDP-4-NATIVE_VLAN_MISMATCH: Native VLAN mismatch discovered on GigabitEthernet0/2 (1), with SW2 GigabitEthernet0/2 (99)."
+        }),
+        "expected_fault": "SW1 native VLAN is set to 1 while SW2 native VLAN is set to 99.",
+        "osi_layer": "Layer 2",
+        "concept": "802.1Q Native VLAN",
+        "severity": "MEDIUM",
+        "expected_next_command": "show interfaces trunk",
+        "expected_fix": "interface Gi0/2\n switchport trunk native vlan 99",
+        "verification_method": "show interfaces trunk | include Native"
+    },
+
+    # --- GATEWAY CATEGORY (3 Cases) ---
+    {
+        "case_id": "CASE-005",
+        "title": "Host Default Gateway Outside Local Subnet",
+        "category": "Gateway",
+        "symptom": "PC3 (192.168.10.50/24) cannot reach any off-subnet destinations or the Internet.",
+        "topology_note": "Router R1 G0/0/0 is 192.168.10.1/24. PC3 IP is 192.168.10.50/24.",
+        "show_outputs": json.dumps({
+            "ipconfig /all (PC3)": "IPv4 Address: 192.168.10.50\nSubnet Mask: 255.255.255.0\nDefault Gateway: 192.168.20.1",
+            "show ip interface brief (R1)": "GigabitEthernet0/0/0 192.168.10.1 YES manual up up"
+        }),
+        "expected_fault": "PC3 default gateway is set to 192.168.20.1 (wrong subnet) instead of 192.168.10.1.",
+        "osi_layer": "Layer 3",
+        "concept": "Default Gateway Configuration",
+        "severity": "HIGH",
+        "expected_next_command": "ipconfig /all",
+        "expected_fix": "Set PC3 Default Gateway to 192.168.10.1 in network settings.",
+        "verification_method": "ping 192.168.10.1 from PC3"
+    },
+    {
+        "case_id": "CASE-006",
+        "title": "Router Subinterface IP Address Typo",
+        "category": "Gateway",
+        "symptom": "All hosts in VLAN 20 (192.168.20.0/24) fail to reach their default gateway for Router-on-a-Stick.",
+        "topology_note": "R1 G0/0/0.20 provides Inter-VLAN routing for VLAN 20.",
+        "show_outputs": json.dumps({
+            "show ip interface brief (R1)": "GigabitEthernet0/0/0.20 192.168.200.1 YES manual up up",
+            "show running-config interface Gi0/0/0.20": "interface GigabitEthernet0/0/0.20\n encapsulation dot1Q 20\n ip address 192.168.200.1 255.255.255.0"
+        }),
+        "expected_fault": "R1 G0/0/0.20 subinterface is misconfigured with IP 192.168.200.1 instead of 192.168.20.1.",
+        "osi_layer": "Layer 3",
+        "concept": "Inter-VLAN Routing Subinterface",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip interface brief",
+        "expected_fix": "interface Gi0/0/0.20\n ip address 192.168.20.1 255.255.255.0",
+        "verification_method": "ping 192.168.20.1 from host in VLAN 20"
+    },
+    {
+        "case_id": "CASE-007",
+        "title": "Subinterface Missing Encapsulation Dot1Q Command",
+        "category": "Gateway",
+        "symptom": "Subinterface G0/0/0.30 shows down/down and refuses to route VLAN 30 traffic.",
+        "topology_note": "R1 router-on-a-stick subinterface for VLAN 30.",
+        "show_outputs": json.dumps({
+            "show interface Gi0/0/0.30": "GigabitEthernet0/0/0.30 is down, line protocol is down\n  Hardware is GigabitEthernet, address is 0001.C412.3301",
+            "show running-config interface Gi0/0/0.30": "interface GigabitEthernet0/0/0.30\n ip address 192.168.30.1 255.255.255.0"
+        }),
+        "expected_fault": "Missing 'encapsulation dot1Q 30' command on subinterface G0/0/0.30.",
+        "osi_layer": "Layer 3",
+        "concept": "Dot1Q Encapsulation",
+        "severity": "HIGH",
+        "expected_next_command": "show running-config interface Gi0/0/0.30",
+        "expected_fix": "interface Gi0/0/0.30\n encapsulation dot1Q 30\n ip address 192.168.30.1 255.255.255.0",
+        "verification_method": "show ip interface brief | include 0.30"
+    },
+
+    # --- DHCP CATEGORY (4 Cases) ---
+    {
+        "case_id": "CASE-008",
+        "title": "DHCP Pool Exhaustion in Office Subnet",
+        "category": "DHCP",
+        "symptom": "New clients connecting to the network obtain APIPA addresses (169.254.x.x).",
+        "topology_note": "Router R1 acts as DHCP server with pool size 10 IPs (192.168.1.10 - 192.168.1.19).",
+        "show_outputs": json.dumps({
+            "show ip dhcp binding": "IP address Client-ID/Hardware address Lease expiration Type\n192.168.1.10 0100.1122.3344.01 Infinite Automatic\n192.168.1.11 0100.1122.3344.02 Infinite Automatic\n...\n192.168.1.19 0100.1122.3344.10 Infinite Automatic\nTotal bindings: 10",
+            "show ip dhcp pool": "Pool Office_Pool :\n Utilization mark (red/blue) : 100 / 0\n Subnet size (Standard) : 10\n Total addresses : 10\n Leased addresses : 10\n Pending addresses : 0"
+        }),
+        "expected_fault": "DHCP pool address range is completely exhausted (100% utilization).",
+        "osi_layer": "Layer 7",
+        "concept": "DHCP Pool Sizing",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip dhcp pool",
+        "expected_fix": "ip dhcp pool Office_Pool\n network 192.168.1.0 255.255.255.0",
+        "verification_method": "ipconfig /renew on client"
+    },
+    {
+        "case_id": "CASE-009",
+        "title": "Missing IP Helper-Address for Cross-Subnet DHCP",
+        "category": "DHCP",
+        "symptom": "Clients in VLAN 40 (192.168.40.0/24) fail to receive DHCP leases from centralized DHCP Server at 10.1.1.50.",
+        "topology_note": "R1 G0/0/0.40 receives broadcast DHCP DISCOVER from VLAN 40.",
+        "show_outputs": json.dumps({
+            "show running-config interface Gi0/0/0.40": "interface GigabitEthernet0/0/0.40\n encapsulation dot1Q 40\n ip address 192.168.40.1 255.255.255.0",
+            "ipconfig /all (Client)": "Autoconfiguration IPv4 Address: 169.254.182.91"
+        }),
+        "expected_fault": "Interface G0/0/0.40 lacks 'ip helper-address 10.1.1.50' to relay DHCP broadcast requests to unicast.",
+        "osi_layer": "Layer 7",
+        "concept": "DHCP Relay / IP Helper",
+        "severity": "HIGH",
+        "expected_next_command": "show ip interface Gi0/0/0.40",
+        "expected_fix": "interface Gi0/0/0.40\n ip helper-address 10.1.1.50",
+        "verification_method": "ipconfig /renew from client in VLAN 40"
+    },
+    {
+        "case_id": "CASE-010",
+        "title": "DHCP Excluded-Addresses Including Default Gateway causing Conflict",
+        "category": "DHCP",
+        "symptom": "Router logs IP conflict notifications for 192.168.50.1.",
+        "topology_note": "R1 interface IP is 192.168.50.1. DHCP pool started handing out 192.168.50.1.",
+        "show_outputs": json.dumps({
+            "show running-config | section dhcp": "ip dhcp pool VLAN50_POOL\n network 192.168.50.0 255.255.255.0\n default-router 192.168.50.1",
+            "show ip dhcp conflict": "IP Address Detection Method Detection Time\n192.168.50.1 Ping 08:30:15"
+        }),
+        "expected_fault": "Missing 'ip dhcp excluded-address 192.168.50.1 192.168.50.10' configuration.",
+        "osi_layer": "Layer 7",
+        "concept": "DHCP Excluded Addresses",
+        "severity": "MEDIUM",
+        "expected_next_command": "show running-config | include excluded-address",
+        "expected_fix": "ip dhcp excluded-address 192.168.50.1 192.168.50.10",
+        "verification_method": "show ip dhcp conflict"
+    },
+    {
+        "case_id": "CASE-011",
+        "title": "Wrong Default Router Option in DHCP Pool",
+        "category": "DHCP",
+        "symptom": "DHCP clients obtain IP address successfully but cannot browse outside local LAN.",
+        "topology_note": "Clients get IP 192.168.60.10/24, Default Router option points to 192.168.60.254 (non-existent). Real gateway is 192.168.60.1.",
+        "show_outputs": json.dumps({
+            "show ip dhcp pool": "Pool Pool_60 :\n Default router : 192.168.60.254\n Domain Name : internal.corp\n DNS Server : 8.8.8.8",
+            "show ip interface brief (R1)": "GigabitEthernet0/0/0.60 192.168.60.1 YES manual up up"
+        }),
+        "expected_fault": "DHCP pool option default-router is set to 192.168.60.254 instead of 192.168.60.1.",
+        "osi_layer": "Layer 7",
+        "concept": "DHCP Options (Option 3)",
+        "severity": "HIGH",
+        "expected_next_command": "show ip dhcp pool",
+        "expected_fix": "ip dhcp pool Pool_60\n default-router 192.168.60.1",
+        "verification_method": "ipconfig /all on client"
+    },
+
+    # --- DNS CATEGORY (3 Cases) ---
+    {
+        "case_id": "CASE-012",
+        "title": "Incorrect DNS Server IP Configured on Workstation",
+        "category": "DNS",
+        "symptom": "Users can ping 8.8.8.8 by IP address, but browsing 'www.cisco.com' fails with Server Not Found.",
+        "topology_note": "Internal DNS server is 10.10.10.53. Client PC configured with 10.10.10.253.",
+        "show_outputs": json.dumps({
+            "ipconfig /all": "IPv4 Address: 172.16.1.10\nDefault Gateway: 172.16.1.1\nDNS Servers: 10.10.10.253",
+            "nslookup www.cisco.com": "DNS request timed out.\ntimeout was 2 seconds.\n*** Can't find server name for address 10.10.10.253: Timed out"
+        }),
+        "expected_fault": "Client DNS server setting is pointing to invalid IP 10.10.10.253 instead of 10.10.10.53.",
+        "osi_layer": "Layer 7",
+        "concept": "DNS Client Configuration",
+        "severity": "MEDIUM",
+        "expected_next_command": "nslookup www.cisco.com 10.10.10.53",
+        "expected_fix": "Change client DNS server configuration to 10.10.10.53.",
+        "verification_method": "nslookup www.cisco.com"
+    },
+    {
+        "case_id": "CASE-013",
+        "title": "DNS Server Unreachable Due to Missing Routing Table Entry",
+        "category": "DNS",
+        "symptom": "Branch office PCs cannot resolve internal domain names. Direct pings to DNS server 10.50.0.53 fail with Destination Host Unreachable.",
+        "topology_note": "Branch Router BR1 missing route to 10.50.0.0/16 corporate subnet.",
+        "show_outputs": json.dumps({
+            "show ip route (BR1)": "Codes: C - connected, S - static\nGateway of last resort is not set\nC 192.168.100.0/24 is directly connected, Gi0/0/0",
+            "nslookup server.corp.local": ";; connection timed out; no servers could be reached"
+        }),
+        "expected_fault": "Branch router BR1 lacks a route to the corporate network 10.50.0.0/16 where DNS server resides.",
+        "osi_layer": "Layer 3",
+        "concept": "DNS Routing Dependency",
+        "severity": "HIGH",
+        "expected_next_command": "show ip route 10.50.0.53",
+        "expected_fix": "ip route 10.50.0.0 255.255.0.0 192.168.100.254",
+        "verification_method": "ping 10.50.0.53"
+    },
+    {
+        "case_id": "CASE-014",
+        "title": "Missing A Record on Packet Tracer DNS Server",
+        "category": "DNS",
+        "symptom": "Clients resolve 'fileserver.local' successfully but 'portal.local' fails to resolve.",
+        "topology_note": "Packet Tracer Server device acting as DNS server.",
+        "show_outputs": json.dumps({
+            "nslookup portal.local 10.0.0.254": "*** 10.0.0.254 can't find portal.local: Non-existent domain",
+            "Packet Tracer DNS Service Config": "DNS Service: ON\nRecord Table:\nName: fileserver.local Type: A Record Address: 10.0.0.10\n(portal.local record is missing)"
+        }),
+        "expected_fault": "DNS Server table is missing the A record mapping 'portal.local' to 10.0.0.20.",
+        "osi_layer": "Layer 7",
+        "concept": "DNS Resource Records",
+        "severity": "LOW",
+        "expected_next_command": "nslookup portal.local",
+        "expected_fix": "Add A Record on DNS Server: Name: portal.local, Address: 10.0.0.20",
+        "verification_method": "nslookup portal.local"
+    },
+
+    # --- ROUTING CATEGORY (5 Cases) ---
+    {
+        "case_id": "CASE-015",
+        "title": "Missing Return Static Route for Remote LAN",
+        "category": "Routing",
+        "symptom": "HQ PC (10.1.1.10) can ping ISP router interface, but remote site PC (192.168.80.10) pings to HQ fail.",
+        "topology_note": "HQ Router HQ-R1 has route to 192.168.80.0/24 via WAN. WAN Edge Router Edge-R1 missing return route to 192.168.80.0/24.",
+        "show_outputs": json.dumps({
+            "show ip route (Edge-R1)": "Codes: C - connected, S - static\nGateway of last resort is 203.0.113.1\nC 10.1.1.0/24 is directly connected, Gi0/0/0\nC 203.0.113.0/30 is directly connected, Gi0/0/1\n(Route to 192.168.80.0/24 is MISSING)",
+            "ping 192.168.80.10 (Edge-R1)": "Type escape sequence to abort.\nSending 5, 100-byte ICMP Echos to 192.168.80.10, timeout is 2 seconds:\n.....\nSuccess rate is 0 percent (0/5)"
+        }),
+        "expected_fault": "Edge-R1 lacks return static route for remote LAN 192.168.80.0/24 back to HQ-R1 (10.1.1.2).",
+        "osi_layer": "Layer 3",
+        "concept": "Asymmetric Routing / Missing Return Route",
+        "severity": "HIGH",
+        "expected_next_command": "show ip route 192.168.80.0",
+        "expected_fix": "ip route 192.168.80.0 255.255.255.0 10.1.1.2",
+        "verification_method": "ping 192.168.80.10 from HQ PC"
+    },
+    {
+        "case_id": "CASE-016",
+        "title": "OSPF Area ID Mismatch Between Neighbor Routers",
+        "category": "Routing",
+        "symptom": "OSPF neighbor relationship fails to form between R1 and R2 over link 10.0.12.0/30.",
+        "topology_note": "R1 G0/0/0 (10.0.12.1/30) in OSPF Area 0. R2 G0/0/0 (10.0.12.2/30) in OSPF Area 1.",
+        "show_outputs": json.dumps({
+            "show ip ospf neighbor (R1)": "(No OSPF neighbors listed)",
+            "show ip ospf interface Gi0/0/0 (R1)": "Gi0/0/0 is up, line protocol is up\n Process ID 1, Router ID 1.1.1.1, Network Type BROADCAST, Cost: 1\n Enabled by interface config, Area 0",
+            "show ip ospf interface Gi0/0/0 (R2)": "Gi0/0/0 is up, line protocol is up\n Process ID 1, Router ID 2.2.2.2, Network Type BROADCAST, Cost: 1\n Enabled by interface config, Area 1"
+        }),
+        "expected_fault": "OSPF Area mismatch: R1 interface is in Area 0 while R2 interface is in Area 1.",
+        "osi_layer": "Layer 3",
+        "concept": "OSPF Neighbor Adjacency Requirements",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip ospf interface Gi0/0/0",
+        "expected_fix": "router ospf 1\n no network 10.0.12.0 0.0.0.3 area 1\n network 10.0.12.0 0.0.0.3 area 0",
+        "verification_method": "show ip ospf neighbor"
+    },
+    {
+        "case_id": "CASE-017",
+        "title": "OSPF Passive Interface Configured on Inter-Router Link",
+        "category": "Routing",
+        "symptom": "OSPF hello packets are suppressed on R1 G0/0/1, preventing neighbor formation with R3.",
+        "topology_note": "R1 connected to R3 on Gi0/0/1.",
+        "show_outputs": json.dumps({
+            "show ip ospf interface Gi0/0/0": "Gi0/0/1 is up, line protocol is up\n Process ID 1, Router ID 1.1.1.1\n Suppressed hello enabled (Passive Interface)",
+            "show running-config | section ospf": "router ospf 1\n passive-interface GigabitEthernet0/0/1"
+        }),
+        "expected_fault": "GigabitEthernet0/0/1 is incorrectly configured as a passive interface under OSPF process 1.",
+        "osi_layer": "Layer 3",
+        "concept": "OSPF Passive Interface",
+        "severity": "HIGH",
+        "expected_next_command": "show running-config | section ospf",
+        "expected_fix": "router ospf 1\n no passive-interface GigabitEthernet0/0/1",
+        "verification_method": "show ip ospf neighbor"
+    },
+    {
+        "case_id": "CASE-018",
+        "title": "Static Route Next-Hop IP Mismatch",
+        "category": "Routing",
+        "symptom": "Static route on Branch router points to non-existent next-hop address 172.16.0.25.",
+        "topology_note": "Point-to-point link between BR1 (172.16.0.1/30) and HQ1 (172.16.0.2/30).",
+        "show_outputs": json.dumps({
+            "show running-config | include ip route": "ip route 0.0.0.0 0.0.0.0 172.16.0.25",
+            "show ip route": "Gateway of last resort is not set\nS* 0.0.0.0/0 [1/0] via 172.16.0.25 (inactive/unreachable)"
+        }),
+        "expected_fault": "Static default route points to incorrect next-hop IP 172.16.0.25 instead of 172.16.0.2.",
+        "osi_layer": "Layer 3",
+        "concept": "Static Route Next-Hop Resolution",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip route",
+        "expected_fix": "no ip route 0.0.0.0 0.0.0.0 172.16.0.25\nip route 0.0.0.0 0.0.0.0 172.16.0.2",
+        "verification_method": "ping 172.16.0.2"
+    },
+    {
+        "case_id": "CASE-019",
+        "title": "RIPv2 Auto-Summarization Causing Discontiguous Subnet Drop",
+        "category": "Routing",
+        "symptom": "Subnet 10.1.2.0/24 traffic is randomly dropped across RIPv2 network.",
+        "topology_note": "R1 and R2 running RIPv2 with discontiguous 10.0.0.0 subnets separated by 172.16.1.0/24 link.",
+        "show_outputs": json.dumps({
+            "show ip protocols": "Routing Protocol is rip\n Automatic network summarization is in effect\n Maximum path: 4",
+            "show ip route rip": "R 10.0.0.0/8 [120/1] via 172.16.1.2 (Summarized classful network)"
+        }),
+        "expected_fault": "RIPv2 auto-summary is enabled, summarizing discontiguous subnets to classful 10.0.0.0/8.",
+        "osi_layer": "Layer 3",
+        "concept": "Classful vs Classless Routing Summarization",
+        "severity": "MEDIUM",
+        "expected_next_command": "show ip protocols",
+        "expected_fix": "router rip\n no auto-summary",
+        "verification_method": "show ip route rip"
+    },
+
+    # --- ACL CATEGORY (4 Cases) ---
+    {
+        "case_id": "CASE-020",
+        "title": "Extended ACL Implicit Deny Blocking HTTP Web Traffic",
+        "category": "ACL",
+        "symptom": "Users on 192.168.100.0/24 can ping Web Server 10.200.1.50 but cannot load http://10.200.1.50.",
+        "topology_note": "ACL 101 applied inbound on R1 G0/0/0.",
+        "show_outputs": json.dumps({
+            "show access-lists 101": "Extended IP access list 101\n 10 permit icmp 192.168.100.0 0.0.0.255 host 10.200.1.50\n (implicit deny ip any any matches 42 packets)",
+            "show running-config interface Gi0/0/0": "interface GigabitEthernet0/0/0\n ip access-group 101 in"
+        }),
+        "expected_fault": "ACL 101 only permits ICMP traffic, causing HTTP (TCP port 80/443) to hit the implicit deny.",
+        "osi_layer": "Layer 4",
+        "concept": "ACL Filtering Rules & Implicit Deny",
+        "severity": "HIGH",
+        "expected_next_command": "show access-lists 101",
+        "expected_fix": "ip access-list extended 101\n 15 permit tcp 192.168.100.0 0.0.0.255 host 10.200.1.50 eq 80\n 16 permit tcp 192.168.100.0 0.0.0.255 host 10.200.1.50 eq 443",
+        "verification_method": "curl/http test to 10.200.1.50"
+    },
+    {
+        "case_id": "CASE-021",
+        "title": "Standard ACL Applied Inbound on Wrong Interface",
+        "category": "ACL",
+        "symptom": "Standard ACL 10 intended to block PC4 (192.168.1.50) blocks ALL traffic entering R1 from LAN.",
+        "topology_note": "Standard ACL 10 (deny 192.168.1.50, permit any) applied IN on G0/0/0 instead of closest to destination.",
+        "show_outputs": json.dumps({
+            "show access-lists 10": "Standard IP access list 10\n 10 deny 192.168.1.50\n 20 permit any",
+            "show running-config interface Gi0/0/0": "interface GigabitEthernet0/0/0\n ip access-group 10 in"
+        }),
+        "expected_fault": "Standard ACL placed inbound on source interface blocks local routing before evaluation.",
+        "osi_layer": "Layer 3",
+        "concept": "ACL Placement Rules (Standard vs Extended)",
+        "severity": "HIGH",
+        "expected_next_command": "show ip interface Gi0/0/0",
+        "expected_fix": "interface Gi0/0/0\n no ip access-group 10 in\ninterface Gi0/0/1\n ip access-group 10 out",
+        "verification_method": "ping from 192.168.1.51"
+    },
+    {
+        "case_id": "CASE-022",
+        "title": "ACL Inbound vs Outbound Direction Misconfiguration",
+        "category": "ACL",
+        "symptom": "Traffic from Guest VLAN 99 is supposed to be blocked from entering Corporate Server LAN, but passes freely.",
+        "topology_note": "ACL GUEST_BLOCK configured with deny rules for Guest source IP.",
+        "show_outputs": json.dumps({
+            "show ip interface Gi0/0/0.99": "Inbound access list is not set\nOutbound access list is GUEST_BLOCK",
+            "show access-lists GUEST_BLOCK": "Extended IP access list GUEST_BLOCK\n 10 deny ip 192.168.99.0 0.0.0.255 10.0.0.0 0.255.255.255\n 20 permit ip any any"
+        }),
+        "expected_fault": "ACL GUEST_BLOCK is applied OUTBOUND on subinterface Gi0/0/0.99 instead of INBOUND.",
+        "osi_layer": "Layer 3",
+        "concept": "ACL Interface Direction (IN vs OUT)",
+        "severity": "HIGH",
+        "expected_next_command": "show ip interface Gi0/0/0.99",
+        "expected_fix": "interface Gi0/0/0.99\n no ip access-group GUEST_BLOCK out\n ip access-group GUEST_BLOCK in",
+        "verification_method": "ping 10.0.0.10 from Guest PC"
+    },
+    {
+        "case_id": "CASE-023",
+        "title": "ACL Wildcard Mask Error Permitting Unintended Subnets",
+        "category": "ACL",
+        "symptom": "Security audit reveals host 192.168.2.10 can access Restricted Server 10.10.10.10 despite ACL rule.",
+        "topology_note": "ACL line intended for 192.168.1.0/24 used wildcard mask 0.0.3.255 instead of 0.0.0.255.",
+        "show_outputs": json.dumps({
+            "show access-lists 50": "Standard IP access list 50\n 10 permit 192.168.1.0 0.0.3.255 (matches 192.168.0.0 - 192.168.3.255!)"
+        }),
+        "expected_fault": "Wildcard mask 0.0.3.255 is too broad, permitting subnets 192.168.0.0/24 through 192.168.3.255.",
+        "osi_layer": "Layer 3",
+        "concept": "ACL Wildcard Mask Calculation",
+        "severity": "MEDIUM",
+        "expected_next_command": "show access-lists 50",
+        "expected_fix": "access-list 50 permit 192.168.1.0 0.0.0.255",
+        "verification_method": "ping 10.10.10.10 from 192.168.2.10"
+    },
+
+    # --- NAT CATEGORY (3 Cases) ---
+    {
+        "case_id": "CASE-024",
+        "title": "Missing IP NAT Inside Designation on LAN Interface",
+        "category": "NAT",
+        "symptom": "Internal hosts (192.168.1.0/24) fail to reach Internet web servers. Packet captures show source IP is not translated.",
+        "topology_note": "Router R1 handles NAT overload. Outside interface Gi0/0/1 has 'ip nat outside'. Inside interface Gi0/0/0 lacks 'ip nat inside'.",
+        "show_outputs": json.dumps({
+            "show ip nat translations": "(Table is completely empty)",
+            "show ip interface Gi0/0/0": "GigabitEthernet0/0/0 is up, line protocol is up\n Internet address is 192.168.1.1/24\n Useful info: NAT is disabled on this interface"
+        }),
+        "expected_fault": "LAN interface GigabitEthernet0/0/0 is missing the 'ip nat inside' command.",
+        "osi_layer": "Layer 3",
+        "concept": "NAT Interface Association",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip interface Gi0/0/0",
+        "expected_fix": "interface GigabitEthernet0/0/0\n ip nat inside",
+        "verification_method": "show ip nat translations"
+    },
+    {
+        "case_id": "CASE-025",
+        "title": "NAT Overload ACL Mismatched Network Subnet",
+        "category": "NAT",
+        "symptom": "Subnet 192.168.20.0/24 hosts cannot access Internet while 192.168.10.0/24 hosts work fine.",
+        "topology_note": "NAT overload configured with 'ip nat inside source list 1 interface Gi0/0/1 overload'.",
+        "show_outputs": json.dumps({
+            "show access-lists 1": "Standard IP access list 1\n 10 permit 192.168.10.0 0.0.0.255",
+            "show running-config | include ip nat": "ip nat inside source list 1 interface GigabitEthernet0/0/1 overload"
+        }),
+        "expected_fault": "NAT ACL 1 only includes 192.168.10.0/24 and omits 192.168.20.0/24.",
+        "osi_layer": "Layer 3",
+        "concept": "PAT / NAT Overload Access List",
+        "severity": "HIGH",
+        "expected_next_command": "show access-lists 1",
+        "expected_fix": "access-list 1 permit 192.168.20.0 0.0.0.255",
+        "verification_method": "ping 8.8.8.8 from 192.168.20.10"
+    },
+    {
+        "case_id": "CASE-026",
+        "title": "Static NAT Mapped to Incorrect Internal Private IP",
+        "category": "NAT",
+        "symptom": "External clients attempting to access public web server at 203.0.113.10 receive Connection Refused.",
+        "topology_note": "Internal DMZ Web Server real IP is 172.16.100.50.",
+        "show_outputs": json.dumps({
+            "show ip nat translations": "Pro Inside global Inside local Outside local Outside global\ntcp 203.0.113.10:80 172.16.100.5:80 --- ---",
+            "show running-config | include ip nat static": "ip nat inside source static tcp 172.16.100.5 80 203.0.113.10 80 extendable"
+        }),
+        "expected_fault": "Static NAT entry maps public IP to 172.16.100.5 instead of real server IP 172.16.100.50.",
+        "osi_layer": "Layer 3",
+        "concept": "Static NAT / Port Forwarding",
+        "severity": "HIGH",
+        "expected_next_command": "show ip nat translations",
+        "expected_fix": "no ip nat inside source static tcp 172.16.100.5 80 203.0.113.10 80\nip nat inside source static tcp 172.16.100.50 80 203.0.113.10 80",
+        "verification_method": "curl http://203.0.113.10 from external client"
+    },
+
+    # --- WIRELESS CATEGORY (4 Cases) ---
+    {
+        "case_id": "CASE-027",
+        "title": "WPA2 Pre-Shared Key Mismatch on Laptop Wireless Adapter",
+        "category": "Wireless",
+        "symptom": "Laptop fails to associate with Wireless Access Point 'Corp_WiFi'. Status displays 'Authenticating... Failed'.",
+        "topology_note": "AP configured with WPA2-PSK key 'SecretPass123!'. Laptop profile saved key 'Secretpass123!'.",
+        "show_outputs": json.dumps({
+            "Wireless Client Status": "SSID: Corp_WiFi\nSecurity: WPA2-Personal (PSK)\nEncryption: AES\nStatus: Disconnected (Authentication Failure)",
+            "AP Wireless Configuration": "SSID: Corp_WiFi\nAuth Type: WPA2-PSK\nPre-Shared Key: SecretPass123!"
+        }),
+        "expected_fault": "Pre-shared key case sensitivity mismatch ('Secretpass123!' vs 'SecretPass123!').",
+        "osi_layer": "Layer 2",
+        "concept": "WPA2-PSK Authentication",
+        "severity": "MEDIUM",
+        "expected_next_command": "Inspect wireless client profile key",
+        "expected_fix": "Update Laptop wireless profile security key to 'SecretPass123!'.",
+        "verification_method": "Check Wireless Client Association Status"
+    },
+    {
+        "case_id": "CASE-028",
+        "title": "Hidden SSID Broadcast & Case Sensitivity Typo",
+        "category": "Wireless",
+        "symptom": "Wireless tablet cannot scan or auto-connect to corporate network.",
+        "topology_note": "AP configured with SSID 'Corporate_Wi-Fi' with Broadcast SSID disabled. Tablet typed 'Corporate_Wifi'.",
+        "show_outputs": json.dumps({
+            "AP Wireless Config": "SSID: Corporate_Wi-Fi\nBroadcast SSID: Disabled\nBand: 2.4GHz / 5GHz",
+            "Tablet Client Profile": "Configured Network Name: Corporate_Wifi"
+        }),
+        "expected_fault": "SSID name mismatch ('Corporate_Wifi' vs 'Corporate_Wi-Fi') combined with disabled SSID broadcast.",
+        "osi_layer": "Layer 2",
+        "concept": "SSID Broadcast & Name Matching",
+        "severity": "LOW",
+        "expected_next_command": "Verify exact SSID spelling on AP",
+        "expected_fix": "Change tablet profile network name to exact string 'Corporate_Wi-Fi'.",
+        "verification_method": "ping default gateway from wireless tablet"
+    },
+    {
+        "case_id": "CASE-029",
+        "title": "Access Point Switch Port Native VLAN Mismatch",
+        "category": "Wireless",
+        "symptom": "Autonomous AP boots up but fails to obtain IP address from Management VLAN 10.",
+        "topology_note": "AP expects Management traffic untagged on Native VLAN 10. Switch port Fa0/5 native VLAN is 1.",
+        "show_outputs": json.dumps({
+            "show interfaces FastEthernet0/5 switchport": "Name: Fa0/5\nMode: trunk\nTrunking Native Mode VLAN: 1 (default)",
+            "AP Console Output": "%DHCP-4-DHCP_FAILED: DHCP discovery failed on BVI1"
+        }),
+        "expected_fault": "Switch port connected to AP has native VLAN set to 1 instead of Management VLAN 10.",
+        "osi_layer": "Layer 2",
+        "concept": "AP Management Native VLAN",
+        "severity": "HIGH",
+        "expected_next_command": "show interfaces Fa0/5 switchport",
+        "expected_fix": "interface Fa0/5\n switchport trunk native vlan 10",
+        "verification_method": "ping AP Management IP"
+    },
+    {
+        "case_id": "CASE-030",
+        "title": "Wireless Controller Option 43 Missing for Lightweight AP Join",
+        "category": "Wireless",
+        "symptom": "Lightweight Access Points (LAP1, LAP2) remain in a continuous reboot join loop.",
+        "topology_note": "LAPs in VLAN 50 require DHCP Option 43 to locate Wireless LAN Controller (WLC) IP 10.100.1.10.",
+        "show_outputs": json.dumps({
+            "LAP Console Log": "*Mar 1 00:02:15.000: %CAPWAP-3-ERRORLOG: Did not get WLC IP from DHCP Option 43.\n*Mar 1 00:02:20.000: %CAPWAP-3-ERRORLOG: Discovery failed. Retrying...",
+            "show ip dhcp pool Pool_VLAN50": "Pool Pool_VLAN50 :\n Utilization : 12%\n Subnet size : 254\n Option 43 : MISSING"
+        }),
+        "expected_fault": "DHCP Pool Pool_VLAN50 lacks Option 43 specifying WLC IP address 10.100.1.10.",
+        "osi_layer": "Layer 7",
+        "concept": "CAPWAP / Option 43 AP Discovery",
+        "severity": "CRITICAL",
+        "expected_next_command": "show ip dhcp pool Pool_VLAN50",
+        "expected_fix": "ip dhcp pool Pool_VLAN50\n option 43 hex f1040a64010a",
+        "verification_method": "show ap summary on WLC"
+    }
+]
+
+def main():
+    os.makedirs("data", exist_ok=True)
+    json_path = os.path.join("data", "cases.json")
+    csv_path = os.path.join("data", "cases.csv")
+    
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(cases, f, indent=2)
+    print(f"Saved {len(cases)} cases to {json_path}")
+    
+    fieldnames = list(cases[0].keys())
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for case in cases:
+            writer.writerow(case)
+    print(f"Saved {len(cases)} cases to {csv_path}")
+
+if __name__ == "__main__":
+    main()

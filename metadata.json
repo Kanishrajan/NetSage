@@ -1,0 +1,6 @@
+{
+  "name": "NetSage AI",
+  "description": "AI-Assisted Network Troubleshooting with Human Review for Cisco Packet Tracer scenarios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
